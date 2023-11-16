@@ -214,4 +214,74 @@ def infinite_stopping_compute_N_2d(log_file,fes_phi_windows,fes_psi_windows,targ
         N_list[k,l] += np.exp(etot_trj[t]*w)
     return index,N_list
 
+def infinite_stopping_compute_lnrho_EMUS_2d(log_file,phi_windows,psi_windows,fes_phi_windows,fes_psi_windows,kappa,run_kbt,target_kbt,dof,quench_gamma,Emin,Emax,index_r,dt=1.0,heat=False):
+    import lammps
+    import numpy as np
+    dphi = np.pi * 2.0 / phi_windows
+    dpsi = np.pi * 2.0 / psi_windows
+    fes_dphi = np.pi * 2.0 / fes_phi_windows
+    fes_dpsi = np.pi * 2.0 / fes_psi_windows
+    phi_centers = np.arange(-np.pi+dphi/2.0,np.pi,dphi)
+    psi_centers = np.arange(-np.pi+dpsi/2.0,np.pi,dpsi)
+    fes_phi_centers = np.arange(-np.pi+fes_dphi/2.0,np.pi,fes_dphi)
+    fes_psi_centers = np.arange(-np.pi+fes_dpsi/2.0,np.pi,fes_dpsi)
+    # merge
+    thermo_data = get_thermo_data(log_file)
+    e_trj = np.array(thermo_data.TotEng)
+    phi_trj = np.array(thermo_data.c_3) * np.pi / 180.0
+    psi_trj = np.array(thermo_data.c_4) * np.pi / 180.0
+    t_trj = np.array(thermo_data.Step)
+    if heat:
+        log_b_file = log_file.replace("qg","qg-")
+        thermo_data_b = get_thermo_data(log_b_file)
+        e_trj_b = np.array(thermo_data_b.TotEng)[1:]
+        e_trj = np.append(np.flip(e_trj_b),e_trj)
+        phi_trj_b = np.array(thermo_data_b.c_3)[1:] * np.pi / 180.0
+        phi_trj = np.append(np.flip(phi_trj_b),phi_trj)
+        psi_trj_b = np.array(thermo_data_b.c_4)[1:] * np.pi / 180.0
+        psi_trj = np.append(np.flip(psi_trj_b),psi_trj)
+        t_trj_b = np.array(thermo_data_b.Step)[1:] * -0.1 # change this if dt_b changes
+        t_trj = np.append(np.flip(t_trj_b),t_trj) * dt
+    # find tau^- and tau^+
+    Emin_ind = np.argwhere(e_trj < Emin)
+    Emax_ind = np.argwhere(e_trj > Emax)
+    if len(Emax_ind) == 0:
+        start = 0 
+    else:
+        start = np.max(Emax_ind) + 1 
+    if len(Emin_ind) == 0:
+        end = len(e_trj) - 1 
+    else:
+        end = np.min(Emin_ind) - 1 
+    dgt_trj = t_trj * quench_gamma * dof 
+    L = len(e_trj)
+    # compute rho,F
+    lnnum = log_sum(-e_trj/run_kbt-dgt_trj)
+    lndenom = log_sum(-e_trj/target_kbt-dgt_trj)
+    lnrho = np.ones((fes_phi_windows,fes_psi_windows))*-np.inf
+    lnone = -np.inf
+    lnF = np.ones((phi_windows,psi_windows))*-np.inf
+    for t in range(L):
+        # compute lnbias_matrix
+        lnbias_matrix = np.ones((phi_windows,psi_windows)) * -np.inf
+        dist2_phi = angle_distance2_trj_pbc(phi_centers,phi_trj[t])
+        dist2_psi = angle_distance2_trj_pbc(psi_centers,psi_trj[t])
+        for i in range(phi_windows):
+            for j in range(psi_windows):
+                lnbias_matrix[i,j] = -kappa*(dist2_phi[i]+dist2_psi[j])/(2.0*run_kbt)
+        lnsum_bias = log_sum(lnbias_matrix.flatten())
+        k = int((phi_trj[t]+np.pi)/fes_dphi)%fes_phi_windows
+        l = int((psi_trj[t]+np.pi)/fes_dpsi)%fes_psi_windows
+        lnrho[k,l] = log_sum_binary(lnrho[k,l],-e_trj[t]/run_kbt-dgt_trj[t]-lnsum_bias)
+        lnone = log_sum_binary(lnone,-e_trj[t]/run_kbt-dgt_trj[t]-lnsum_bias)
+        for i in range(phi_windows):
+            for j in range(psi_windows):
+                lnF[i,j] = log_sum_binary(lnF[i,j],lnbias_matrix[i,j]-e_trj[t]/run_kbt-dgt_trj[t]-lnsum_bias)
+    lnrho -= lnnum
+    lnone -= lnnum
+    lnF -= lnnum
+    lnQ = lndenom - lnnum
+    time = t_trj[end] - t_trj[start]
+    return index_r,lnrho,lnone,lnF.flatten(),lnQ,time
+
 
